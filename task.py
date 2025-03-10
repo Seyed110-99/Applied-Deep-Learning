@@ -31,209 +31,256 @@
 import torch
 import itertools
 
+# ---------------------------
+# 1. Multi-index and Polynomial Features
+# ---------------------------
 def generate_multi_indices(D, M):
-    """ Generate all multi-indices of degree less than or equal to M for D variables.
+    """Generate all multi-indices of degree <= M for D variables.
+    
     Args:
-        D: int, the number of variables.
-        M: int, the maximum degree.
+        D (int): Number of variables.
+        M (int): Maximum degree.
+        
     Returns:
-        multi_indices: list of tuples, each tuple is a multi-index.
+        torch.Tensor: Tensor of shape (K, D) containing all multi-indices.
     """
-    
     multi_indices = []
-
-    # Search for all possible combinations of exponents
-
+    # Iterate over all possible values of m
     for m in range(M + 1):
-
-        # Using combinations_with_replacement returns indices (positions) where the power is added.
-        # For example, if D = 3 and m = 2, we may get (0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2).
-        # We then convert these to exponent counts.
-
-    
+        # Generate all combinations with replacement 
         combos = itertools.combinations_with_replacement(range(D), m)
-
+        # Iterate over each combination and create a multi-index
         for comb in combos:
-            
-            # Initialize the exponents to zero
             exponents = [0] * D
-            
-            # Set the exponents to the values in comb
             for i in comb:
                 exponents[i] += 1
-
             multi_indices.append(tuple(exponents))
-            
     return torch.tensor(multi_indices, dtype=torch.float32)
 
-
 def polynomial_features(x, M):
-    """ Compute polynomial features of x up to degree M.
-    Args:
-        x: torch.Tensor of shape (D, ), the input data.
-        M: int, the maximum degree.
-    Returns:
-        features: torch.Tensor of shape (N, K), the polynomial features.
-    """
-    # Vectors implementation
-
-    # Get the number of samples and the number of variables
-    D = x.shape[0]
-
-    # Generate all multi-indices
-    multi_indices = generate_multi_indices(D, M)
-
-    # Compute the polynomial features
+    """Compute polynomial features of a single input vector x up to degree M.
     
-    features = torch.prod(torch.pow(x, multi_indices), dim=1)
-
+    Args:
+        x (torch.Tensor): Input data of shape (D,).
+        M (int): Maximum degree.
+        
+    Returns:
+        torch.Tensor: Polynomial features of shape (K,), where K = sum_{m=0}^{M} binom(D+m-1, m).
+    """
+    # x is a 1-D tensor of shape (D,)
+    D = x.shape[0]
+    multi_indices = generate_multi_indices(D, M)  # shape: (K, D)
+    # Expand x to shape (1, D) for broadcasting
+    x_expanded = x.unsqueeze(0)  # shape: (1, D)
+    # Compute elementwise power: result shape is (K, D)
+    powered = torch.pow(x_expanded, multi_indices)  
+    # Multiply along features to get a vector of shape (K,)
+    features = torch.prod(powered, dim=1)
     return features
 
 def logistic_fun(w, M, x):
-    """ Compute the logistic function.
+    """Compute the logistic function for a single input vector.
+    
     Args:
-        w: torch.Tensor of shape (K,), the weights.
-        M: int, the maximum degree.
-        x: torch.Tensor of shape (D, ), the input data.
+        w (torch.Tensor): Weights of shape (K,), where K is the number of polynomial features.
+        M (int): Maximum polynomial degree.
+        x (torch.Tensor): Input vector of shape (D,).
+        
     Returns:
-        y: torch.Tensor of shape (N,), the output.
+        torch.Tensor: A scalar tensor representing the predicted probability.
     """
-   # Compute the polynomial features
+    # Compute polynomial features (returns a tensor of shape (K,))
     features = polynomial_features(x, M)
-
-    # Compute Z 
-    z = torch.matmul(features, w)
-
-    # Compute the output
+    # Compute the weighted sum (dot product)
+    z = torch.dot(features, w)
+    # Apply the sigmoid function
     y = torch.sigmoid(z)
-
     return y
 
+# ---------------------------
+# 2. Loss Classes
+# ---------------------------
 class MyCrossEntropy():
     def __init__(self):
         self.loss = None
-        self.y_pred = None
-        self.y_true = None
-    
     def forward(self, y_pred, y_true):
-        """ Compute the cross-entropy loss.
+        """Compute cross-entropy loss.
+        
         Args:
-            y_pred: torch.Tensor of Shape (N,)
-            y_true: torch.Tensor of Shape (N,)
+            y_pred (torch.Tensor): Predicted probabilities of shape (N,).
+            y_true (torch.Tensor): True labels of shape (N,).
+            
         Returns:
-            loss: torch.Tensor of Shape (1)
+            torch.Tensor: Scalar loss.
         """
-        self.y_pred = y_pred
-        self.y_true = y_true
         self.loss = -torch.mean(y_true * torch.log(y_pred + 1e-7) + (1 - y_true) * torch.log(1 - y_pred + 1e-7))
         return self.loss
 
 class MyRootMeanSquare():
     def __init__(self):
         self.loss = None
-        self.y_pred = None
-        self.y_true = None
-    
     def forward(self, y_pred, y_true):
-        """ Compute the root mean square loss.
+        """Compute RMSE loss.
+        
         Args:
-            y_pred: torch.Tensor of Shape (N,)
-            y_true: torch.Tensor of Shape (N,)
+            y_pred (torch.Tensor): Predicted probabilities of shape (N,).
+            y_true (torch.Tensor): True labels of shape (N,).
+            
         Returns:
-            loss: torch.Tensor of Shape (1)
+            torch.Tensor: Scalar loss.
         """
-        self.y_pred = y_pred
-        self.y_true = y_true
         self.loss = torch.sqrt(torch.mean((y_pred - y_true) ** 2))
         return self.loss
 
-def  fit_logistic_sgd(x, y_valid, M, loss_type = "CE", lr = 0.01, mini_batch_size =16, max_epochs=100):
-    """ Fit a logistic reggression model using SGD.
-    Args:
-        x: torch.Tensor of shape (N, D), the input data.
-        y_valid: torch.Tensor of shape (N,), the target values.
-        M: int, the maximum degree.
-        loss_type: str, the loss function to use. Either "CE" for cross-entropy or "RMS" for root mean square.
-        lr: float, the learning rate.
-        mini_batch_size: int, the mini-batch size.
-        max_epochs: int, the maximum number of epochs.
-    Returns:
-        w: torch.Tensor of shape (M,), the weights.
-    """
-
-    N, D = x.shape
-
-    # Get the number of features
-    K = polynomial_features(x[0], M).shape[0]
-
-    # Compute the polynomial features
+# ---------------------------
+# 3. SGD Training Function
+# ---------------------------
+def fit_logistic_sgd(x, y_valid, M, loss_type="CE", lr=0.01, mini_batch_size=16, max_epochs=100):
+    """Fit a logistic regression model using SGD.
     
-    # Initialize the weights 
+    Args:
+        x (torch.Tensor): Input data of shape (N, D).
+        y_valid (torch.Tensor): Target values of shape (N,).
+        M (int): Maximum polynomial degree.
+        loss_type (str): "CE" for cross-entropy or "RMS" for RMSE.
+        lr (float): Learning rate.
+        mini_batch_size (int): Mini-batch size.
+        max_epochs (int): Number of epochs.
+        
+    Returns:
+        torch.Tensor: Optimized weight vector of shape (K,).
+    """
+    N, D = x.shape
+    # Determine the number of polynomial features (K) using the first sample
+    K = polynomial_features(x[0], M).shape[0]
+    # Initialize weights with shape (K,)
     weights = torch.randn(K, requires_grad=True)
-
-    # Initialize the loss function
+    # Choose loss function
     if loss_type == "CE":
         loss_fn = MyCrossEntropy()
     elif loss_type == "RMS":
         loss_fn = MyRootMeanSquare()
     else:
-        raise ValueError("The loss_type must be either 'CE' or 'RMS'.")
-
-    # Initialise the optimizer
+        raise ValueError("loss_type must be 'CE' or 'RMS'.")
+    # Set up optimizer
     optimizer = torch.optim.SGD([weights], lr=lr)
-
-    # Training loop
-
+    
     for epoch in range(max_epochs):
+        # Shuffle data
+        indices = torch.randperm(N)
+        x_shuffled = x[indices]
+        y_shuffled = y_valid[indices]
+    
+        epoch_loss = 0.0
+        num_batches = 0
 
-       # Shuffle the data
-
-       indices = torch.randperm(N)
-
-       # Loop over the mini-batches
-       x_shuffled = x[indices]
-       y_shuffled = y_valid[indices]
-
-       for i in range(0, N, mini_batch_size):
-           
-            # Get the mini batch
-            x_mini_batch = x_shuffled[i:i + mini_batch_size]
-            y_mini_batch = y_shuffled[i:i + mini_batch_size]
-
-            # Compute the output
-
-            #y_pred = []
-
-            # for x in x_mini_batch:
-            #     y_pred_i = logistic_fun(weights, M, x)
-            #     y_pred.append(y_pred_i)
-
-            # # Convert the list to a tensor
-            # y_pred = torch.stack(y_pred, type=torch.float32)
-
-            #y_pred = torch.stack([logistic_fun(weights, M, x) for x in x_mini_batch])
-            
+        for i in range(0, N, mini_batch_size):
+            x_mini_batch = x_shuffled[i:i+mini_batch_size]
+            y_mini_batch = y_shuffled[i:i+mini_batch_size]
+        
             batched_logistic_fun = torch.vmap(logistic_fun, in_dims=(None, None, 0))
             y_pred = batched_logistic_fun(weights, M, x_mini_batch)
-
-            # Compute the loss
+        
             loss = loss_fn.forward(y_pred, y_mini_batch)
 
-            if epoch == 0 or epoch == max_epochs - 1:
-                print(f"Epoch {epoch}, Loss: {loss}")
-
-            elif  epoch % 10 == 0 and not epoch == 0 and not epoch == max_epochs - 1: 
-                print(f"Epoch {epoch}, Loss: {loss}")
-
-
-            # Zero the gradients
             optimizer.zero_grad()
-
-            # Compute the gradients
             loss.backward()
-
-            # Update the weights
             optimizer.step()
 
+            # Accumulate the loss over this mini-batch
+            epoch_loss += loss.item()
+            num_batches += 1
+
+        # Compute the average loss for this epoch
+        epoch_loss /= num_batches
+
+        # Print the *average* epoch loss
+        if epoch == 0 or epoch % 10 == 0 or epoch == max_epochs - 1:
+            print(f"Epoch {epoch}, Avg Loss: {epoch_loss:.4f}")
+
+    
     return weights
 
+def compute_accuracy(y_pred, y_true):
+    """Compute accuracy.
+    
+    Args:
+        y_pred (torch.Tensor): Predicted binary labels of shape (N,).
+        y_true (torch.Tensor): True binary labels of shape (N,).
+        
+    Returns:
+        float: Accuracy value.
+    """
+    N = y_pred.shape[0]
+    accuracy = torch.sum(y_pred == y_true).float() / N
+    return accuracy
+
+# ---------------------------
+# 4. Main Script: Data Generation, Training, and Evaluation
+# ---------------------------
+if __name__ == "__main__":
+    # Set parameters for the underlying true model and data generation
+    M_true = 2      # Underlying true model uses M = 2
+    D = 5
+    # Determine number of polynomial features (K) for true model
+    K = generate_multi_indices(D, M_true).shape[0]
+    # Create true weight vector w_test using the specified formula.
+    # Example formula: w_i = (-1)^(K-i) * (sqrt(K-i) / K)
+    w_test = torch.stack([((-1)**i) * (torch.sqrt(torch.tensor(i, dtype=torch.float32)) / K) 
+                           for i in range(K, 0, -1)])
+    
+    # Generate training and test data uniformly from [-5, 5]^5
+    N_train = 200
+    N_test = 100
+    xTr = (torch.rand(N_train, D) * 10) - 5
+    xTe = (torch.rand(N_test, D) * 10) - 5
+    
+    # Use vmap to compute true probabilities for generated data
+    batched_logistic_fun = torch.vmap(logistic_fun, in_dims=(None, None, 0))
+    yTr_true_prob = batched_logistic_fun(w_test, M_true, xTr)
+    yTe_true_prob = batched_logistic_fun(w_test, M_true, xTe)
+    
+    # Add Gaussian noise with std=1.0 and threshold at 0.5 to generate binary targets
+    yTr_noisy = yTr_true_prob + torch.randn(N_train) * 1.0
+    yTe_noisy = yTe_true_prob + torch.randn(N_test) * 1.0
+    yTr = (yTr_noisy >= 0.5).float()
+    yTe = (yTe_noisy >= 0.5).float()
+    
+    # ---------------------------
+    # Training and Evaluation for each loss type and polynomial order M
+    # ---------------------------
+    losses = {"CE": {}, "RMS": {}}
+    for loss_type in ["CE", "RMS"]:
+        for M in [1, 2, 3]:
+            losses[loss_type][M] = []
+            print(f"\nTraining with Loss: {loss_type}, Polynomial Order M: {M}")
+            w_model = fit_logistic_sgd(xTr, yTr, M, loss_type=loss_type, lr=0.1, mini_batch_size=16, max_epochs=200)
+            
+            # Evaluate on training set
+            yTr_pred_prob = torch.vmap(logistic_fun, in_dims=(None, None, 0))(w_model, M, xTr)
+            yTr_pred = (yTr_pred_prob >= 0.5).float()
+            train_accuracy = compute_accuracy(yTr_pred, yTr)
+            
+            # Evaluate on test set
+            yTe_pred_prob = torch.vmap(logistic_fun, in_dims=(None, None, 0))(w_model, M, xTe)
+            yTe_pred = (yTe_pred_prob >= 0.5).float()
+            test_accuracy = compute_accuracy(yTe_pred, yTe)
+            
+            losses[loss_type][M].append((int(round(float(train_accuracy) * 100)), int(round(float(test_accuracy) * 100))))
+            # print(f"Loss type: {loss_type}, M: {M}")
+            # print(f"Training Accuracy: {train_accuracy:.2%}, Test Accuracy: {test_accuracy:.2%}")
+    
+    print("\nAll Losses and Accuracies:")
+    print(losses)
+    
+    # # ---------------------------
+    # # Metric justification (<=50 words)
+    # # ---------------------------
+    # print("\nMetric Justification: Accuracy is chosen because it directly measures the proportion of correctly classified samples, which is vital for evaluating binary classification performance.")
+    
+    # # ---------------------------
+    # # Loss Function Comparison (<=100 words)
+    # # ---------------------------
+    # print("\nLoss Function Comparison: Cross-entropy loss tends to produce steeper gradients for misclassified samples, leading to faster convergence and more decisive predictions. In contrast, RMSE loss provides a smoother gradient but can result in slower convergence. Our experiments indicate that cross-entropy generally achieves higher accuracy on the test set compared to RMSE, reflecting its suitability for classification.")
+
+    # # Note: Extend these experiments in task1a.py to make M a learnable parameter.
